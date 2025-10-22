@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>The October Classic — Live Scoring</title>
 
-  <!-- React and Babel via CDN -->
+  <!-- React + Babel (no build tools needed) -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Firebase SDKs -->
+  <!-- Firebase (compat SDKs for simplest browser usage) -->
   <script src="https://www.gstatic.com/firebasejs/12.4.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.4.0/firebase-auth-compat.js"></script>
@@ -41,6 +41,7 @@
     .small{color:var(--muted);font-size:12px}
     .sectionTitle{font-weight:800;font-size:18px}
     .title{font-size:26px;font-weight:800;margin:0}
+    .copy{font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; color:#b6c2d1}
   </style>
 </head>
 <body>
@@ -49,7 +50,7 @@
   <script type="text/babel">
     const { useEffect, useMemo, useState } = React;
 
-    // === Firebase config ===
+    // === Firebase config (yours) ===
     const firebaseConfig = {
       apiKey: "AIzaSyCow9g5H93v4N-0NPIv5GQLGTzGx4uzu7M",
       authDomain: "october-classic.firebaseapp.com",
@@ -60,13 +61,16 @@
       measurementId: "G-KPC9V144K5"
     };
 
+    // Init Firebase
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
     const auth = firebase.auth();
 
-    const EDITOR_PIN = "0509";
+    // === Simple editor PIN ===
+    const EDITOR_PIN = "0509"; // change anytime
     const COMP_ID = "october-classic-2025";
 
+    // === Initial data (can edit players here if needed) ===
     const DEFAULT_PLAYERS = ["Oisin", "Neil"];
     const DEFAULT_ROUNDS = [
       { id:"d1-am",course:"Ballyliffin – Old",format:"Strokeplay",notes:"LD: 4 & 18 | CTTP: 5 & 17",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
@@ -81,6 +85,7 @@
 
     const POINTS = { frontBackWin: 3, roundWin: 10, birdie: 1, eagle: 5, girOverallBonus: 10 };
 
+    // === Firestore helpers ===
     async function seedIfEmpty(players = DEFAULT_PLAYERS) {
       const ref = db.doc(`competitions/${COMP_ID}`);
       const snap = await ref.get();
@@ -90,8 +95,9 @@
           players,
           rounds: DEFAULT_ROUNDS,
           girOverallWinner: "",
+          notes: "Enter LD/CTTP as total points for the round (include carry-overs).",
           createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        });
+        }, { merge: true });
       }
     }
 
@@ -109,42 +115,121 @@
       return db.doc(`competitions/${COMP_ID}`).set(update, { merge: true });
     }
 
+    // === Scoring logic ===
+    function calcNineWinnerPts(round, players) {
+      const scores = {}; players.forEach(p=> scores[p]=0);
+      const front = Object.entries(round.front9||{}).filter(([,v])=> typeof v === 'number');
+      const back  = Object.entries(round.back9 ||{}).filter(([,v])=> typeof v === 'number');
+      const award = (entries)=>{
+        if (entries.length < players.length) return; // need all players for a fair compare
+        const sorted = [...entries].sort((a,b)=> a[1]-b[1]); // low wins
+        const low = sorted[0][1];
+        const tied = sorted.filter(([,v])=> v===low).map(([k])=>k);
+        if (tied.length===1) scores[tied[0]] += POINTS.frontBackWin; // simple: no split for ties
+      };
+      award(front); award(back);
+      return scores;
+    }
+
+    function calcRoundWinnerPts(round, players) {
+      const pts = {}; players.forEach(p=> pts[p]=0);
+      if (round.roundWinner && players.includes(round.roundWinner)) {
+        pts[round.roundWinner]+=POINTS.roundWin; 
+        return pts;
+      }
+      // Optionally infer from totals if provided
+      const totalEntries = Object.entries(round.total||{});
+      if (totalEntries.length === players.length) {
+        const isStroke = round.format === 'Strokeplay';
+        const sorted = [...totalEntries].sort((a,b)=> isStroke? a[1]-b[1] : b[1]-a[1]);
+        const top = sorted[0];
+        const tie = sorted.filter(([,v])=> v===top[1]);
+        if (tie.length===1) pts[top[0]] += POINTS.roundWin;
+      }
+      return pts;
+    }
+
     function calcTotals(data) {
-      const { players, rounds } = data;
-      const tally = {}; players.forEach(p=> tally[p]={frontBackWins:0,roundWins:0,longDrives:0,cttps:0,birdEagle:0,girOverall:0,total:0});
-      rounds.forEach(r=>{
-        players.forEach(p=>{
+      const { players, rounds, girOverallWinner } = data;
+      const tally = {}; players.forEach((p)=> tally[p] = { frontBackWins:0, roundWins:0, longDrives:0, cttps:0, birdEagle:0, girOverall:0, total:0 });
+
+      rounds.forEach((r)=>{
+        const nine = calcNineWinnerPts(r, players);
+        players.forEach(p=> tally[p].frontBackWins += (nine[p]||0));
+
+        const rw = calcRoundWinnerPts(r, players);
+        players.forEach(p=> tally[p].roundWins += (rw[p]||0));
+
+        players.forEach((p)=>{
           tally[p].longDrives += Number(r.longDrivePts?.[p]||0);
-          tally[p].cttps += Number(r.cttpPts?.[p]||0);
+          tally[p].cttps      += Number(r.cttpPts?.[p]||0);
           const b = Number(r.birdies?.[p]||0)*POINTS.birdie;
           const e = Number(r.eagles?.[p]||0)*POINTS.eagle;
-          tally[p].birdEagle += b+e;
+          tally[p].birdEagle += b + e;
         });
       });
-      players.forEach(p=> tally[p].total = Object.values(tally[p]).reduce((a,b)=>a+b,0));
+
+      if (girOverallWinner && tally[girOverallWinner]) {
+        tally[girOverallWinner].girOverall = POINTS.girOverallBonus;
+      }
+
+      players.forEach((p)=> {
+        tally[p].total = tally[p].frontBackWins + tally[p].roundWins + tally[p].longDrives + tally[p].cttps + tally[p].birdEagle + tally[p].girOverall;
+      });
       return tally;
     }
 
+    // === UI components ===
+    function NumberInput({ value, onChange, placeholder }) {
+      return <input className="input" type="number" value={value ?? ''} placeholder={placeholder} onChange={(e)=> onChange(e.target.value===''? '': Number(e.target.value))}/>;
+    }
+
     function RoundEditor({ r, players, onUpdate, isEditor }) {
-      function patch(path,val){
-        if(!isEditor)return;
-        const next={...r};
-        const segs=path.split('.');
-        let cur=next;
-        for(let i=0;i<segs.length-1;i++)cur=cur[segs[i]]=cur[segs[i]]??{};
-        cur[segs[segs.length-1]]=val;
+      function patch(path, val){
+        if (!isEditor) return;
+        const next = { ...r };
+        const segs = path.split('.');
+        let cur = next;
+        for (let i=0;i<segs.length-1;i++) cur = cur[segs[i]] = cur[segs[i]] ?? {};
+        cur[segs[segs.length-1]] = val;
         onUpdate(next);
       }
       return (
         <div className="card vstack">
-          <div className="sectionTitle">{r.course}</div>
-          <div className="small">{r.notes}</div>
-          {players.map(p=>(
-            <div key={p} className="vstack">
-              <div className="kpi"><b>{p}</b></div>
-              <input className="input" type="number" value={r.total?.[p]||''} onChange={e=>patch(`total.${p}`,Number(e.target.value))}/>
+          <div className="hstack" style={{justifyContent:'space-between'}}>
+            <div>
+              <div className="badge">{r.format}</div>
+              <div className="sectionTitle">{r.course}</div>
+              <div className="small">{r.notes}</div>
             </div>
-          ))}
+          </div>
+          <div className="grid" style={{gridTemplateColumns:'1fr 1fr'}}>
+            {players.map((p)=> (
+              <div key={p} className="vstack">
+                <div className="kpi"><b>{p}</b><span className="small">Front 9</span></div>
+                <NumberInput value={r.front9?.[p]} onChange={(v)=> patch(`front9.${p}`, v)} placeholder="strokes / points" />
+                <div className="kpi"><b>{p}</b><span className="small">Back 9</span></div>
+                <NumberInput value={r.back9?.[p]} onChange={(v)=> patch(`back9.${p}`, v)} placeholder="strokes / points" />
+                <div className="kpi"><b>{p}</b><span className="small">Total (optional)</span></div>
+                <NumberInput value={r.total?.[p]} onChange={(v)=> patch(`total.${p}`, v)} placeholder="auto/enter" />
+                <div className="kpi"><b>{p}</b><span className="small">Long Drive points</span></div>
+                <NumberInput value={r.longDrivePts?.[p]} onChange={(v)=> patch(`longDrivePts.${p}`, v)} placeholder="inc. carryovers" />
+                <div className="kpi"><b>{p}</b><span className="small">Closest-to-Pin points</span></div>
+                <NumberInput value={r.cttpPts?.[p]} onChange={(v)=> patch(`cttpPts.${p}`, v)} placeholder="inc. carryovers" />
+                <div className="kpi"><b>{p}</b><span className="small">Birdies</span></div>
+                <NumberInput value={r.birdies?.[p]} onChange={(v)=> patch(`birdies.${p}`, v)} placeholder="count" />
+                <div className="kpi"><b>{p}</b><span className="small">Eagles</span></div>
+                <NumberInput value={r.eagles?.[p]} onChange={(v)=> patch(`eagles.${p}`, v)} placeholder="count" />
+              </div>
+            ))}
+          </div>
+          <div className="hstack" style={{gap:8,flexWrap:'wrap'}}>
+            <span className="small">Round Winner (10 pts):</span>
+            {players.map((p)=> (
+              <button key={p} className={`btn ${r.roundWinner===p? 'primary':''}`} disabled={!isEditor} onClick={()=> patch('roundWinner', p)}>{p}</button>
+            ))}
+            {isEditor && <button className="btn ghost" onClick={()=> patch('roundWinner','')}>Clear</button>}
+          </div>
         </div>
       );
     }
@@ -154,40 +239,105 @@
         <div className="card">
           <div className="sectionTitle">Points</div>
           <table className="table">
-            <thead><tr><th>Category</th>{players.map(p=><th key={p}>{p}</th>)}</tr></thead>
+            <thead>
+              <tr><th>Category</th>{players.map((p)=> <th key={p}>{p}</th>)}</tr>
+            </thead>
             <tbody>
-              <tr><td>Long Drives</td>{players.map(p=><td key={p}>{tally[p].longDrives}</td>)}</tr>
-              <tr><td>CTTPs</td>{players.map(p=><td key={p}>{tally[p].cttps}</td>)}</tr>
-              <tr><td>Birdies+Eagles</td>{players.map(p=><td key={p}>{tally[p].birdEagle}</td>)}</tr>
-              <tr><td><b>Total</b></td>{players.map(p=><td key={p}><b>{tally[p].total}</b></td>)}</tr>
+              <tr><td>Front 9 / Back 9 wins</td>{players.map(p=> <td key={p}>{tally[p].frontBackWins}</td>)}</tr>
+              <tr><td>Round / Match wins</td>{players.map(p=> <td key={p}>{tally[p].roundWins}</td>)}</tr>
+              <tr><td>Long Drives</td>{players.map(p=> <td key={p}>{tally[p].longDrives}</td>)}</tr>
+              <tr><td>Closest Pins</td>{players.map(p=> <td key={p}>{tally[p].cttps}</td>)}</tr>
+              <tr><td>Birdies + Eagles</td>{players.map(p=> <td key={p}>{tally[p].birdEagle}</td>)}</tr>
+              <tr><td>GIR Overall</td>{players.map(p=> <td key={p}>{tally[p].girOverall}</td>)}</tr>
+              <tr style={{fontWeight:800}}><td>Total</td>{players.map(p=> <td key={p}>{tally[p].total}</td>)}</tr>
             </tbody>
           </table>
+          <div className="small">Scoring: Front/Back winner 3, Round winner 10, LD/CTTP = points entered, Birdie 1, Eagle 5, GIR overall +10.</div>
         </div>
       );
     }
 
+    // === App ===
     function App(){
-      const [comp]=useLiveCompetition();
-      const [isEditor,setIsEditor]=useState(false);
+      const [comp] = useLiveCompetition();
+      const [isEditor, setIsEditor] = useState(false);
+
       async function enableEdit(){
-        const pin=prompt('Enter editor PIN');
-        if(pin!==EDITOR_PIN){alert('Incorrect PIN');return;}
+        const pin = window.prompt('Enter editor PIN');
+        if (pin !== EDITOR_PIN) { alert('Incorrect PIN'); return; }
         await auth.signInAnonymously();
-        await seedIfEmpty();
+        await seedIfEmpty();   // ensure the document exists after sign-in
         setIsEditor(true);
       }
-      if(!comp) return <div className="container"><h1>Loading…</h1></div>;
-      const tally=calcTotals(comp);
-      return (
+
+      function disableEdit(){ setIsEditor(false); }
+
+      // If the competition doc doesn't exist yet, allow seeding from the landing state
+      if (!comp) return (
         <div className="container vstack">
-          <h1 className="title">{comp.name}</h1>
-          {!isEditor && <button className="btn primary" onClick={enableEdit}>I’m a scorer</button>}
-          {isEditor && <button className="btn ghost" onClick={()=>setIsEditor(false)}>View mode</button>}
-          <ScoreTable tally={tally} players={comp.players}/>
-          {comp.rounds.map(r=>(
-            <RoundEditor key={r.id} r={r} players={comp.players} isEditor={isEditor}
-              onUpdate={updated=>setCompetition({rounds:comp.rounds.map(x=>x.id===r.id?updated:x)})}/>
-          ))}
+          <h1 className="title">The October Classic — Live Scoring</h1>
+          <p className="small">No scores yet. A scorer must initialise the event.</p>
+          <button className="btn primary" onClick={enableEdit}>I’m a scorer</button>
+        </div>
+      );
+
+      const tally = useMemo(()=> calcTotals(comp), [comp]);
+
+      return (
+        <div className="container vstack" style={{gap:18}}>
+          <header className="hstack" style={{justifyContent:'space-between', flexWrap:'wrap', gap:12}}>
+            <div>
+              <h1 className="title">{comp.name}</h1>
+              <div className="small">Share this URL to view live • Click “I’m a scorer” to edit</div>
+            </div>
+            <div className="hstack">
+              {!isEditor ? (
+                <button className="btn" onClick={enableEdit}>I’m a scorer</button>
+              ) : (
+                <button className="btn ghost" onClick={disableEdit}>View mode</button>
+              )}
+            </div>
+          </header>
+
+          <section className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))'}}>
+            {comp.players.map((p)=> (
+              <div key={p} className="kpi"><span>{p}</span><b className="copy">{(tally?.[p]?.total||0)} pts</b></div>
+            ))}
+          </section>
+
+          <ScoreTable tally={tally} players={comp.players} />
+
+          <section className="card vstack">
+            <div className="hstack" style={{justifyContent:'space-between'}}>
+              <div className="sectionTitle">GIR Overall Bonus</div>
+              <div className="small">Set at the end (+10)</div>
+            </div>
+            <div className="hstack" style={{gap:8,flexWrap:'wrap'}}>
+              {comp.players.map((p)=> (
+                <button key={p} className={`btn ${comp.girOverallWinner===p? 'primary':''}`} disabled={!isEditor}
+                  onClick={()=> isEditor && setCompetition({ girOverallWinner: p })}>{p}</button>
+              ))}
+              {isEditor && <button className="btn ghost" onClick={()=> setCompetition({ girOverallWinner: '' })}>Clear</button>}
+            </div>
+          </section>
+
+          <section className="vstack">
+            <div className="sectionTitle">Rounds</div>
+            <div className="grid" style={{gridTemplateColumns:'1fr'}}>
+              {comp.rounds.map((r, idx)=> (
+                <RoundEditor key={r.id} r={r} players={comp.players} isEditor={isEditor}
+                  onUpdate={(round)=>{
+                    if (!isEditor) return;
+                    const rounds = [...comp.rounds]; rounds[idx] = round; setCompetition({ rounds });
+                  }} />
+              ))}
+            </div>
+          </section>
+
+          <footer className="vstack card">
+            <div className="sectionTitle">Event notes</div>
+            <div className="small">Enter LD/CTTP as total points for the round (include carry-overs). Front/Back winners=3, Round winner=10, Birdie=1, Eagle=5, GIR overall winner=10.</div>
+          </footer>
         </div>
       );
     }
