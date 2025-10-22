@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The October Classic — Live Scoring</title>
+
+  <!-- React and Babel via CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/12.4.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.4.0/firebase-auth-compat.js"></script>
+
+  <style>
+    :root { --bg:#0f1115; --card:#151823; --muted:#9aa3b2; --text:#e8ecf1; --accent:#6ee7ff; }
+    *{box-sizing:border-box} html,body,#root{height:100%}
+    body{margin:0;background:linear-gradient(180deg,#0d0f14,#0b1220);color:var(--text);
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}
+    .container{max-width:1100px;margin:0 auto;padding:24px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));
+      border:1px solid #1f2431;border-radius:18px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    .hstack{display:flex;gap:12px;align-items:center}
+    .vstack{display:flex;flex-direction:column;gap:12px}
+    .grid{display:grid;gap:14px}
+    .btn{border:1px solid #263043;background:#111827;color:var(--text);
+      border-radius:12px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .btn:hover{border-color:#324057}
+    .btn.primary{background:linear-gradient(135deg,#0ea5e9,#22d3ee);color:#071320;border:none}
+    .btn.ghost{background:transparent;border:1px dashed #334155}
+    .input{background:#0b1020;border:1px solid #1f2937;color:var(--text);
+      border-radius:12px;padding:10px 12px;width:100%}
+    .kpi{padding:10px 12px;border:1px solid #1f2431;border-radius:12px;background:#0c1221;
+      display:flex;justify-content:space-between;align-items:center}
+    .table{width:100%;border-collapse:collapse}
+    .table th,.table td{padding:10px 8px;border-bottom:1px solid #202536;text-align:left}
+    .badge{padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid #1f2937;background:#0f172a;}
+    .small{color:var(--muted);font-size:12px}
+    .sectionTitle{font-weight:800;font-size:18px}
+    .title{font-size:26px;font-weight:800;margin:0}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    // === Firebase config ===
+    const firebaseConfig = {
+      apiKey: "AIzaSyCow9g5H93v4N-0NPIv5GQLGTzGx4uzu7M",
+      authDomain: "october-classic.firebaseapp.com",
+      projectId: "october-classic",
+      storageBucket: "october-classic.firebasestorage.app",
+      messagingSenderId: "784555099142",
+      appId: "1:784555099142:web:6bc49c09f2ebaa3d1fef87",
+      measurementId: "G-KPC9V144K5"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const auth = firebase.auth();
+
+    const EDITOR_PIN = "0509";
+    const COMP_ID = "october-classic-2025";
+
+    const DEFAULT_PLAYERS = ["Oisin", "Neil"];
+    const DEFAULT_ROUNDS = [
+      { id:"d1-am",course:"Ballyliffin – Old",format:"Strokeplay",notes:"LD: 4 & 18 | CTTP: 5 & 17",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d1-pm",course:"Ballyliffin – Glashedy",format:"Strokeplay",notes:"LD: 4 & 16 | CTTP: 7 & 14",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d2-am",course:"Portsalon",format:"Matchplay",notes:"LD: 8 & 17 | CTTP: 5 & 15",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d2-pm",course:"Dunfanaghy",format:"Stableford",notes:"LD: 6 & 16 | CTTP: 9 & 13",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d3-am",course:"Cruit Island (9)",format:"Matchplay",notes:"LD: 1 & 2 | CTTP: 6 & 8",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d3-pm",course:"Narin & Portnoo",format:"Stableford",notes:"LD: 2 & 15 | CTTP: 7 & 16",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d4",course:"Day 4 – TBD",format:"Strokeplay",notes:"",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""},
+      { id:"d5",course:"Mount Juliet",format:"Stableford",notes:"LD: 8 & 17 | CTTP: 3 & 11",front9:{},back9:{},total:{},longDrivePts:{},cttpPts:{},birdies:{},eagles:{},roundWinner:""}
+    ];
+
+    const POINTS = { frontBackWin: 3, roundWin: 10, birdie: 1, eagle: 5, girOverallBonus: 10 };
+
+    async function seedIfEmpty(players = DEFAULT_PLAYERS) {
+      const ref = db.doc(`competitions/${COMP_ID}`);
+      const snap = await ref.get();
+      if (!snap.exists) {
+        await ref.set({
+          name: "The October Classic 2025",
+          players,
+          rounds: DEFAULT_ROUNDS,
+          girOverallWinner: "",
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    function useLiveCompetition() {
+      const [data, setData] = useState(null);
+      useEffect(() => {
+        return db.doc(`competitions/${COMP_ID}`).onSnapshot((d)=> {
+          setData(d.exists ? ({ id: d.id, ...d.data() }) : null);
+        });
+      }, []);
+      return [data];
+    }
+
+    function setCompetition(update) {
+      return db.doc(`competitions/${COMP_ID}`).set(update, { merge: true });
+    }
+
+    function calcTotals(data) {
+      const { players, rounds } = data;
+      const tally = {}; players.forEach(p=> tally[p]={frontBackWins:0,roundWins:0,longDrives:0,cttps:0,birdEagle:0,girOverall:0,total:0});
+      rounds.forEach(r=>{
+        players.forEach(p=>{
+          tally[p].longDrives += Number(r.longDrivePts?.[p]||0);
+          tally[p].cttps += Number(r.cttpPts?.[p]||0);
+          const b = Number(r.birdies?.[p]||0)*POINTS.birdie;
+          const e = Number(r.eagles?.[p]||0)*POINTS.eagle;
+          tally[p].birdEagle += b+e;
+        });
+      });
+      players.forEach(p=> tally[p].total = Object.values(tally[p]).reduce((a,b)=>a+b,0));
+      return tally;
+    }
+
+    function RoundEditor({ r, players, onUpdate, isEditor }) {
+      function patch(path,val){
+        if(!isEditor)return;
+        const next={...r};
+        const segs=path.split('.');
+        let cur=next;
+        for(let i=0;i<segs.length-1;i++)cur=cur[segs[i]]=cur[segs[i]]??{};
+        cur[segs[segs.length-1]]=val;
+        onUpdate(next);
+      }
+      return (
+        <div className="card vstack">
+          <div className="sectionTitle">{r.course}</div>
+          <div className="small">{r.notes}</div>
+          {players.map(p=>(
+            <div key={p} className="vstack">
+              <div className="kpi"><b>{p}</b></div>
+              <input className="input" type="number" value={r.total?.[p]||''} onChange={e=>patch(`total.${p}`,Number(e.target.value))}/>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function ScoreTable({ tally, players }) {
+      return (
+        <div className="card">
+          <div className="sectionTitle">Points</div>
+          <table className="table">
+            <thead><tr><th>Category</th>{players.map(p=><th key={p}>{p}</th>)}</tr></thead>
+            <tbody>
+              <tr><td>Long Drives</td>{players.map(p=><td key={p}>{tally[p].longDrives}</td>)}</tr>
+              <tr><td>CTTPs</td>{players.map(p=><td key={p}>{tally[p].cttps}</td>)}</tr>
+              <tr><td>Birdies+Eagles</td>{players.map(p=><td key={p}>{tally[p].birdEagle}</td>)}</tr>
+              <tr><td><b>Total</b></td>{players.map(p=><td key={p}><b>{tally[p].total}</b></td>)}</tr>
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function App(){
+      const [comp]=useLiveCompetition();
+      const [isEditor,setIsEditor]=useState(false);
+      async function enableEdit(){
+        const pin=prompt('Enter editor PIN');
+        if(pin!==EDITOR_PIN){alert('Incorrect PIN');return;}
+        await auth.signInAnonymously();
+        await seedIfEmpty();
+        setIsEditor(true);
+      }
+      if(!comp) return <div className="container"><h1>Loading…</h1></div>;
+      const tally=calcTotals(comp);
+      return (
+        <div className="container vstack">
+          <h1 className="title">{comp.name}</h1>
+          {!isEditor && <button className="btn primary" onClick={enableEdit}>I’m a scorer</button>}
+          {isEditor && <button className="btn ghost" onClick={()=>setIsEditor(false)}>View mode</button>}
+          <ScoreTable tally={tally} players={comp.players}/>
+          {comp.rounds.map(r=>(
+            <RoundEditor key={r.id} r={r} players={comp.players} isEditor={isEditor}
+              onUpdate={updated=>setCompetition({rounds:comp.rounds.map(x=>x.id===r.id?updated:x)})}/>
+          ))}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
